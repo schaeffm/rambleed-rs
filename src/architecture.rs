@@ -1,6 +1,7 @@
 use bitvec::bits::AsBits;
 use bitvec::order::Lsb0;
 use bitvec::vec::BitVec;
+use std::ops::Shl;
 
 pub(crate) type PhysAddr = usize;
 
@@ -31,15 +32,15 @@ impl DramAddr {
     }
 }
 
-trait Architecture {
+pub(crate) trait Architecture {
     fn phys_to_dram(&self, p: PhysAddr) -> DramAddr;
-    fn dram_to_phys(&self, a: DramAddr) -> PhysAddr;
+    fn dram_to_phys(&self, a: &DramAddr) -> PhysAddr;
 }
 
-struct IntelIvy {
-    dual_channel : bool,
-    dual_dimm : bool,
-    dual_rank : bool,
+pub(crate) struct IntelIvy {
+    pub dual_channel : bool,
+    pub dual_dimm : bool,
+    pub dual_rank : bool,
 }
 
 const MW_BITS : usize= 3;
@@ -87,7 +88,57 @@ impl Architecture for IntelIvy {
         return dram_addr;
     }
 
-    fn dram_to_phys(&self, a: DramAddr) -> usize {
-        unimplemented!()
+    fn dram_to_phys(&self, addr: &DramAddr) -> usize {
+        let bank = addr.bank as usize;
+        let row = addr.row as usize;
+        let rank = addr.rank as usize;
+        let col = addr.col as usize;
+        let chan = addr.chan as usize;
+        let dimm = addr.dimm as usize;
+
+        let mut p_addr = ls_bits(row, 16);
+
+        if self.dual_rank {
+            p_addr <<= 1;
+            p_addr |= bit(bank, 2) ^ bit(row, 3);
+            p_addr <<= 1;
+            p_addr |= bit(rank, 0) ^ bit(row, 2);
+        } else {
+            p_addr <<= 1;
+            p_addr |= bit(bank, 2) ^ bit(row, 2);
+        }
+
+        if(self.dual_dimm) {
+            p_addr <<= 1;
+            p_addr |= bit(dimm, 0);
+        }
+
+        p_addr <<= 1;
+        p_addr |= bit(bank, 1) ^ bit(row, 1);
+        p_addr <<= 1;
+        p_addr |= bit(bank, 0) ^ bit(row, 0);
+
+        if(self.dual_channel) {
+            p_addr <<= 6;
+            p_addr |= ls_bits(col >> 4, 6);
+            p_addr <<= 1;
+            p_addr |= bit(chan, 0) ^ bit(p_addr, 1) ^ bit(p_addr, 2) ^
+                bit (p_addr, 5) ^ bit(p_addr, 6) ^ bit(p_addr, 11) ^ bit(p_addr, 12);
+            p_addr <<= 4;
+            p_addr |= ls_bits(col, 4);
+        } else {
+            p_addr <<= COL_BITS;
+            p_addr |= ls_bits(col, COL_BITS);
+        }
+
+        p_addr << MW_BITS
     }
+}
+
+fn bit(x : usize, i : usize) -> usize {
+    (x >> i) & 1
+}
+
+fn ls_bits(x : usize, i : usize) -> usize {
+    x & ((1 << i) - 1)
 }

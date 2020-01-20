@@ -1,0 +1,12 @@
+[package]
+name = "rambleed-rs"
+version = "0.1.0"
+authors = ["Maximilian Schaeffeler <maximilian.schaeffeler@tum.de>"]
+edition = "2018"
+
+[dependencies]
+nix = "0.7"
+vm-info = ""
+proc_getter = ""
+bitvec = "0.17.1"
+byteorder = "1.3.2"

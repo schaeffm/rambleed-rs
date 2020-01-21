@@ -5,12 +5,16 @@ use crate::profile::Direction::{From1To0, From0To1};
 use crate::hammer::hammer;
 
 #[derive(Debug)]
+#[derive(Clone)]
+#[derive(Copy)]
 pub(crate) enum Direction {
     From1To0,
     From0To1,
 }
 
 #[derive(Debug)]
+#[derive(Clone)]
+#[derive(Copy)]
 pub(crate) struct Flip {
     pub(crate) dir: Direction,
     pub(crate) offset: usize,
@@ -46,6 +50,19 @@ fn find_flips(offset: usize, mut expected: u8, mut actual: u8) -> Vec<Flip> {
     flips
 }
 
+fn flips_in_range(mem: &MemMap, v : &DramRange, expected : u8, c: &Config) -> Vec<Flip> {
+    let mut flips = Vec::new();
+    for i in 0..v.bytes {
+        let offset = i+c.arch.dram_to_phys(&v.start);
+        let actual = mem[offset];
+
+        if actual != expected {
+            flips.append(&mut find_flips(offset, expected, actual));
+        }
+    }
+    flips
+}
+
 pub(crate) fn profile_ranges(mem: &MemMap,
                              r1: &Vec<DramRange>,
                              r2: &Vec<DramRange>,
@@ -53,19 +70,18 @@ pub(crate) fn profile_ranges(mem: &MemMap,
                              p: u8,
                              c: &Config) -> Vec<Flip> {
     fill_ranges(mem, r1, p, c);
+    fill_ranges(mem, v, !p, c);
     fill_ranges(mem, r2, p, c);
     let a1 = dram_to_virt(mem.buf, &r1[0].start, c);
     let a2 = dram_to_virt(mem.buf, &r2[0].start, c);
-
+    let start = &v[0].start;
+    println!("profiling ({}, {}, {}, {}): row {}, pattern {}, {}, {}", start.chan, start.dimm, start.rank, start.bank, v[0].start.row, p, !p, p);
     hammer(a1, a2, c.reads_per_hammer);
+    println!("done hammering");
 
     let mut flips = Vec::new();
     for v_range in v {
-        for (i, &b) in mem.iter().enumerate() {
-            if b != p {
-                flips.append(find_flips(i + c.arch.dram_to_phys(&v_range.start), p, b).as_mut());
-            }
-        }
+        flips.append(&mut flips_in_range(mem, v_range, !p, c));
     }
     flips
 }

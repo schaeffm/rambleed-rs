@@ -135,6 +135,10 @@ fn template_2mb_contig(mem: &MemMap, c: &Config) -> Vec<Flip> {
     let mut flips = vec![];
     // iterate over map, hammer
     for ((chan, dimm,rank, bank, row), rs) in mem.range_map.iter() {
+        if *row == 0 || *row == std::u16::MAX {
+            continue;
+        }
+        
         let row_above = match mem.range_map.get(&(*chan, *dimm, *rank, *bank, *row - 1)) {
             Some(r) => r,
             None => continue,
@@ -231,7 +235,10 @@ fn main() {
         .expect("Failed to allocate memory using hugepages");
 
     c.reads_per_hammer = calibrate(&mem_attack, arch);
-    println!("calibration uses {}", c.reads_per_hammer);
+    println!("Calibrated to {} iterations per hammering", c.reads_per_hammer);
+    let flips = template_2mb_contig(&mem_attack, &c);
+    println!("Found the following flips {:?}", flips);
+    //contig_mem_diff(mem, c);
     //println!("{:#?}", offset_to_dram(0, &c));
     //println!("{:#?}", offset_to_dram(1002000, &c));
     //println!("{:#?}", mem_attack);

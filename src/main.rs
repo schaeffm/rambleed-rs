@@ -15,10 +15,11 @@ use crate::config::Config;
 use crate::intelivy::IntelIvy;
 use crate::profile::Flip;
 use crate::memmap::{MemMap, offset_to_dram, DramRange};
-use crate::alloc::{contig_mem_diff, alloc_2mb_buddy, alloc_2mb_hugepage};
+use crate::alloc::{contig_mem_diff, alloc_2mb_buddy, alloc_2mb_hugepage, alloc_1gb_hugepage};
 use crate::hammer::{hammer, reads_per_refresh};
 use crate::profile::profile_ranges;
 use vm_info::page_size;
+use crate::alloc::virt_to_phys;
 
 const _READ_MULTIPLICATOR: usize = 2;
 
@@ -148,6 +149,7 @@ fn template_2mb_contig(mem: &MemMap, c: &Config) -> Vec<Flip> {
             None => continue,
         };
 
+        println!("({}, {}, {}, {}): row {}", rs[0].start.chan, rs[0].start.dimm, rs[0].start.rank, rs[0].start.bank, rs[0].start.row);
         flips.append(profile_ranges(mem, row_above, row_below, rs, 0x00, c).as_mut());
         flips.append(profile_ranges(mem, row_above, row_below, rs, 0xff, c).as_mut());
     }
@@ -155,14 +157,13 @@ fn template_2mb_contig(mem: &MemMap, c: &Config) -> Vec<Flip> {
     flips
 }
 
-#[cfg(test)]
-#[test]
-fn test_contig_mem_diff() {
-    let mem_attack = alloc_2mb_contig().unwrap();
-    println!("Allocated memory successfully at {:?}", mem_attack);
-    let start_p = virt_to_phys(mem_attack).unwrap();
-    let end_p = virt_to_phys(unsafe { mem_attack.add(2 * SIZE_MB - 1) }).unwrap();
-    assert_eq!(start_p + 2 * SIZE_MB - 1, end_p)
+fn test_contig_mem_diff(c : &Config) {
+    let mem_attack = alloc_1gb_hugepage(c).unwrap();
+    println!("Allocated memory successfully at {:?}", mem_attack.buf);
+    let start_p = virt_to_phys(mem_attack.buf).unwrap();
+    print!("phys: {:X}", start_p);
+    //let end_p = virt_to_phys(unsafe { mem_attack.add(2 * 1<<20 - 1) }).unwrap();
+    //assert_eq!(start_p + 2 * 1<<20 - 1, end_p)
 }
 
 pub fn test_alloc(c : &Config) {
@@ -215,7 +216,7 @@ fn calibrate<T : Architecture>(mem : &MemMap, a : T) -> usize{
     let (a1, a2) = row_conflict_pair(mem).expect("No row conflict pair found! Calibration failed");
     let a1 = mem.buf.wrapping_add(a.dram_to_phys(&a1));
     let a2 = mem.buf.wrapping_add(a.dram_to_phys(&a2));
-    reads_per_refresh(a1, a2, a.refresh_period())
+    3*reads_per_refresh(a1, a2, a.refresh_period())
 }
 
 fn main() {
@@ -233,6 +234,10 @@ fn main() {
 
     let mem_attack = alloc_2mb_hugepage(&c)
         .expect("Failed to allocate memory using hugepages");
+
+    println!("Allocated memory successfully at {:?}", mem_attack.buf);
+    let start_p = virt_to_phys(mem_attack.buf).unwrap_or(std::usize::MAX);
+    println!("Physical address: {:p}", start_p as *const usize);
 
     c.reads_per_hammer = calibrate(&mem_attack, arch);
     println!("Calibrated to {} iterations per hammering", c.reads_per_hammer);

@@ -57,6 +57,7 @@ fn flips_in_range(mem: &MemMap, v : &DramRange, expected : u8, c: &Config) -> Ve
         let actual = mem[offset];
 
         if actual != expected {
+            println!("ALERT, found bitflip");
             flips.append(&mut find_flips(offset, expected, actual));
         }
     }
@@ -75,9 +76,8 @@ pub(crate) fn profile_ranges(mem: &MemMap,
     let a1 = dram_to_virt(mem.buf, &r1[0].start, c);
     let a2 = dram_to_virt(mem.buf, &r2[0].start, c);
     let start = &v[0].start;
-    println!("profiling ({}, {}, {}, {}): row {}, pattern {}, {}, {}", start.chan, start.dimm, start.rank, start.bank, v[0].start.row, p, !p, p);
+    //println!("profiling ({}, {}, {}, {}): row {}, pattern {}, {}, {}", start.chan, start.dimm, start.rank, start.bank, v[0].start.row, p, !p, p);
     hammer(a1, a2, c.reads_per_hammer);
-    println!("done hammering");
 
     let mut flips = Vec::new();
     for v_range in v {

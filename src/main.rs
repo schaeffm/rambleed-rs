@@ -9,6 +9,7 @@ mod intelivy;
 mod memmap;
 mod profile;
 
+use crate::profile::create_stats;
 use crate::alloc::virt_to_phys_pagemap;
 use crate::alloc::{alloc_1gb_hugepage, alloc_2mb_buddy, alloc_2mb_hugepage, contig_mem_diff};
 use crate::architecture::{Architecture, DramAddr};
@@ -135,31 +136,18 @@ fn offset_below(_buf: &MemMap, offset: usize, c: &Config) -> Option<usize> {
     Some(c.arch.dram_to_phys(&dram_addr))
 }
 
-fn template_dram_addr(mem: &mut MemMap, da: DramAddr, c: &Config) -> Vec<Flip> {
+fn template_dram_addr(mem: &mut MemMap, da: &DramAddr, c: &Config) -> Vec<Flip> {
     let mut flips = vec![];
     assert!(da.row != 0 && da.row != std::u16::MAX);
-
-    //let row_above = mem.same_row_ranges(&da.row_above());
-    //let da_above = da.row_above();
-    //let da_below = da.row_below();
-
-    //let row_below = mem.same_row_ranges(&da.row_below());
-    //let da_range = mem.same_row_ranges(&da);
-    let _da_range = &vec![DramRange {
-        start: da.clone(),
-        bytes: 1,
-    }];
 
     println!(
         "({}, {}, {}, {}): row {}",
         da.chan, da.dimm, da.rank, da.bank, da.row
     );
-    //println!("{:?}\n{:?}\n{:?}", row_above,rs, row_below);
-    //profile_ranges(mem, &row_above, &row_below, da_range, 0xff, c);
+
     // 1 to 0
     flips.append(profile_addr(mem, da, 0x00, c).as_mut());
-    //profile_ranges(mem, &row_above, &row_below, da_range, 0x00, c);
-    //flips.append(profile_ranges(mem, &row_above, &row_below, da_range, 0xff, c).as_mut());
+    flips.append(profile_addr(mem, da, 0xff, c).as_mut());
 
     flips
 }
@@ -287,23 +275,52 @@ fn main() {
         "Calibrated to {} iterations per hammering",
         c.reads_per_hammer
     );
+    let addr_old = DramAddr {
+        chan: 0,
+        dimm: 0,
+        rank: 1,
+        bank: 1,
+        row: 7,
+        col: 731,
+        byte: 0,
+        bit: 6,
+    };
+
     let addr = DramAddr {
         chan: 0,
         dimm: 0,
         rank: 0,
         bank: 4,
-        row: 12,
-        col: 420,
+        row: 10,
+        col: 648,
         byte: 5,
-        bit: 0,
+        bit: 6,
     };
-    //let flips = template_dram_addr(&mut mem_attack, addr, &c);
-    let flips = template_2mb_contig(&mut mem_attack, &c);
+
+    let addr_unlikely = DramAddr {
+        chan: 0,
+        dimm: 0,
+        rank: 0,
+        bank: 0,
+        row: 1,
+        col: 982,
+        byte: 7,
+        bit: 3,
+    };
+
+    let mut flips = template_dram_addr(&mut mem_attack, &addr, &c);
+    //let mut flips = template_2mb_contig(&mut mem_attack, &c);
     println!("Found the following flips {:?}", flips);
     println!(
         "Flips as DRAM: {:?}",
         flips
     );
+
+    for f in flips.iter_mut() {
+        create_stats(&mut mem_attack, f, &c);
+        println!("{:#?}", f);
+    }
+
     //contig_mem_diff(mem, c);
     //println!("{:#?}", offset_to_dram(0, &c));
     //println!("{:#?}", offset_to_dram(1002000, &c));

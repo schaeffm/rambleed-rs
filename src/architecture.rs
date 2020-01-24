@@ -1,7 +1,6 @@
 pub(crate) type PhysAddr = usize;
 
-#[derive(Clone)]
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct DramAddr {
     pub chan: u8,
     pub dimm: u8,
@@ -9,22 +8,54 @@ pub struct DramAddr {
     pub bank: u8,
     pub row: u16,
     pub col: u16,
+    pub byte: u8,
+    pub bit: u8,
 }
 
 impl DramAddr {
     pub(crate) fn new() -> DramAddr {
         DramAddr {
-            chan : 0,
-            dimm : 0,
-            rank : 0,
-            bank : 0,
-            row : 0,
-            col : 0,
+            chan: 0,
+            dimm: 0,
+            rank: 0,
+            bank: 0,
+            row: 0,
+            col: 0,
+            byte: 0,
+            bit: 0,
         }
     }
 
-    pub(crate) fn to_row_index(&self) -> (u8, u8, u8, u8, u16) {
-        (self.chan, self.dimm, self.rank, self.bank, self.row)
+    pub fn byte_align(&mut self) {
+        self.bit = 0;
+    }
+
+    pub fn col_align(&mut self) {
+        self.byte_align();
+        self.byte = 0;
+    }
+
+    pub fn row_align(&mut self) {
+        self.col_align();
+        self.col = 0;
+    }
+
+    pub fn row_aligned(&self) -> Self {
+        let mut new = self.clone();
+        new.row_align();
+        new
+    }
+
+    pub fn row_below(&self) -> Self {
+        let mut new = self.clone();
+        new.row += 1;
+        new
+    }
+
+    pub fn row_above(&self) -> Self {
+        let mut new = self.clone();
+        new.row -= 1;
+        new
     }
 }
 

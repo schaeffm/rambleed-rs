@@ -1,25 +1,20 @@
-use std::slice;
-use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
-use crate::architecture::{DramAddr};
+use crate::architecture::DramAddr;
 use crate::config::Config;
 use std::cmp::min;
+use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
+use std::slice;
 
-
-
-#[derive(Clone)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct DramRange {
     pub start: DramAddr,
     pub bytes: usize,
 }
 
-#[derive(Clone)]
-#[derive(Debug)]
 pub(crate) struct MemMap {
-    pub buf: *mut u8,
-    pub len: usize,
-    pub range_map: HashMap<(u8, u8, u8, u8, u16), Vec<DramRange>>,
+    buf: *mut u8,
+    len: usize,
+    range_map: HashMap<DramAddr, Vec<DramRange>>,
 }
 
 impl Deref for MemMap {
@@ -37,14 +32,49 @@ impl DerefMut for MemMap {
 }
 
 impl MemMap {
-    pub(crate) fn new(buf: *mut u8, len: usize, c: &Config) -> Self {
-        MemMap { buf, len, range_map: to_range_map(len, c) }
+    pub(crate) fn new(buf: *mut u8, len: usize, c : &Config) -> Self {
+        MemMap {
+            buf,
+            len,
+            range_map: to_range_map(len, c),
+        }
+    }
+
+    pub fn remove_range(&mut self, _: &DramRange) {
+        //TODO
+    }
+
+    pub fn same_row_ranges(&self, da: &DramAddr) -> Vec<DramRange> {
+        self.range_map
+            .get(&da.row_aligned())
+            .unwrap_or(&vec![])
+            .clone()
+    }
+
+    pub fn get_ranges(&self) -> &HashMap<DramAddr, Vec<DramRange>> {
+        &self.range_map
+    }
+
+    pub fn offset(&self, n: usize) -> *mut u8 {
+        self.buf.wrapping_add(n)
+    }
+
+    pub fn at_dram(&mut self, da : &DramAddr, c : &Config) -> &mut u8 {
+        &mut self[c.arch.dram_to_phys(&da)]
+    }
+
+    pub fn dram_to_offset(&self, da : &DramAddr, c : &Config) -> usize {
+        c.arch.dram_to_phys(&da)
+    }
+
+    pub fn offset_to_dram(&self, offset : usize, c : &Config) -> DramAddr {
+        c.arch.phys_to_dram(offset)
+    }
+
+    pub fn dram_to_virt(&self, da : &DramAddr, c : &Config) -> *mut u8 {
+        self.buf.wrapping_add(c.arch.dram_to_phys(&da))
     }
 }
-
-//fn virt_to_phys_aligned(addr: usize, aligned_bits: usize) -> usize {
-//    addr % (2usize.pow(aligned_bits as u32))
-//}
 
 pub(crate) fn offset_to_dram(offset: usize, c: &Config) -> DramAddr {
     //let phys = virt_to_phys_aligned(offset, c.aligned_bits);
@@ -63,14 +93,14 @@ fn split_into_ranges(len: usize, c: &Config) -> Vec<DramRange> {
     ranges
 }
 
-fn to_range_map(len: usize, c: &Config) -> HashMap<(u8, u8, u8, u8, u16), Vec<DramRange>> {
-    // build a Map<(channel, rank, bank, row)> -> Vec<ranges>
-    let mut range_map = HashMap::<(u8, u8, u8, u8, u16), Vec<DramRange>>::new();
+fn to_range_map(len: usize, c: &Config) -> HashMap<DramAddr, Vec<DramRange>> {
+    let mut range_map = HashMap::<DramAddr, Vec<DramRange>>::new();
     for r in split_into_ranges(len, c) {
-        let addr = &r.start;
-        range_map.entry((addr.chan, addr.dimm, addr.rank, addr.bank, addr.row))
+        range_map
+            .entry(r.start.row_aligned())
             .or_insert_with(Vec::new)
             .push(r);
     }
+    //println!("{:#?}", range_map);
     range_map
 }

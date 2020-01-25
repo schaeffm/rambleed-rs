@@ -84,7 +84,7 @@ fn hammer_bit(mem: &mut MemMap, da : &DramAddr, pat_above : u8, pat_victim : u8,
 }
 
 pub(crate) fn create_stats(mem: &mut MemMap, flip : &mut Flip, c : &Config) -> () {
-    let n = 5;
+    let n = 20;
     let to = compl_fill(flip.dir);
     let from = id_fill(flip.dir);
 

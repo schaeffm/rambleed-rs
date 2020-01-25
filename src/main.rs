@@ -8,7 +8,7 @@ mod hammer;
 mod intelivy;
 mod memmap;
 mod profile;
-
+use crate::alloc::reverse_mapping;
 use crate::profile::create_stats;
 use crate::alloc::virt_to_phys_pagemap;
 use crate::alloc::{alloc_1gb_hugepage, alloc_2mb_buddy, alloc_2mb_hugepage, contig_mem_diff};
@@ -21,6 +21,7 @@ use crate::profile::profile_ranges;
 use crate::profile::Direction::{From0To1, From1To0};
 use crate::profile::{profile_addr, Flip};
 use vm_info::page_size;
+use std::collections::{HashMap, HashSet};
 
 const _READ_MULTIPLICATOR: usize = 2;
 
@@ -245,36 +246,9 @@ fn calibrate<T: Architecture>(mem: &MemMap, a: T) -> usize {
     2 * reads_per_refresh(a1, a2, a.refresh_period())
 }
 
-fn main() {
-    let arch = IntelIvy {
-        dual_channel: false,
-        dual_dimm: false,
-        dual_rank: true,
-    };
-    let mut c: Config = Config {
-        aligned_bits: 20,
-        reads_per_hammer: 0,
-        contiguous_dram_addr: 1 << 12,
-        arch: Box::new(arch.clone()),
-    };
-
-    let mem_attack2 = alloc_2mb_hugepage(&c);
-
-    let mem_attack3 = alloc_2mb_hugepage(&c);
+fn test_stats(c : &Config) {
     let mut mem_attack = alloc_2mb_hugepage(&c).expect("Failed to allocate memory using hugepages");
 
-    println!(
-        "Allocated memory successfully at {:?}",
-        (*mem_attack).as_ptr()
-    );
-    let start_p = virt_to_phys_pagemap(mem_attack.as_ptr()).unwrap_or(std::usize::MAX);
-    println!("Physical address: {:p}", start_p as *const usize);
-
-    c.reads_per_hammer = calibrate(&mem_attack, arch);
-    println!(
-        "Calibrated to {} iterations per hammering",
-        c.reads_per_hammer
-    );
     let addr_old = DramAddr {
         chan: 0,
         dimm: 0,
@@ -286,7 +260,7 @@ fn main() {
         bit: 6,
     };
 
-    let addr = DramAddr {
+    let addr_likely = DramAddr {
         chan: 0,
         dimm: 0,
         rank: 0,
@@ -297,15 +271,15 @@ fn main() {
         bit: 6,
     };
 
-    let addr_unlikely = DramAddr {
+    let addr = DramAddr {
         chan: 0,
         dimm: 0,
-        rank: 0,
-        bank: 0,
-        row: 1,
-        col: 982,
-        byte: 7,
-        bit: 3,
+        rank: 1,
+        bank: 1,
+        row: 7,
+        col: 731,
+        byte: 0,
+        bit: 6,
     };
 
     let mut flips = template_dram_addr(&mut mem_attack, &addr, &c);
@@ -320,8 +294,40 @@ fn main() {
         create_stats(&mut mem_attack, f, &c);
         println!("{:#?}", f);
     }
+}
 
-    //contig_mem_diff(mem, c);
+fn main() {
+    let arch = IntelIvy {
+        dual_channel: false,
+        dual_dimm: false,
+        dual_rank: true,
+    };
+    let mut c: Config = Config {
+        aligned_bits: 20,
+        reads_per_hammer: 0,
+        contiguous_dram_addr: 1 << 12,
+        arch: Box::new(arch.clone()),
+    };
+
+    //let mut mem_attack = alloc_2mb_hugepage(&c).expect("Failed to allocate memory using hugepages");
+    //let off = reverse_mapping(&c, mem_attack.as_mut_ptr());
+    //println!("Page offset to 2 mb: {:?}", off);
+    //println!(
+    //    "Allocated memory successfully at {:?}",
+    //    (*mem_attack).as_ptr()
+    //);
+
+    //let start_p = virt_to_phys_pagemap(mem_attack.as_ptr()).unwrap_or(std::usize::MAX);
+    //println!("Physical address: {:p}", start_p as *const usize);
+
+    //c.reads_per_hammer = calibrate(&mem_attack, arch);
+    //println!(
+    //    "Calibrated to {} iterations per hammering",
+    //    c.reads_per_hammer
+    //);
+
+
+    contig_mem_diff(&c);
     //println!("{:#?}", offset_to_dram(0, &c));
     //println!("{:#?}", offset_to_dram(1002000, &c));
     //println!("{:#?}", mem_attack);

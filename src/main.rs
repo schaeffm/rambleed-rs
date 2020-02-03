@@ -142,7 +142,7 @@ fn template_dram_addr(mem: &mut MemMap, da: &DramAddr, c: &Config) -> Vec<Flip> 
     assert!(da.row != 0 && da.row != std::u16::MAX);
 
     println!(
-        "({}, {}, {}, {}): row {}",
+        "(Chan {}, DIMM {}, Rank {}, Bank {}, Row {})",
         da.chan, da.dimm, da.rank, da.bank, da.row
     );
 
@@ -160,7 +160,7 @@ fn template_2mb_contig(mem: &mut MemMap, c: &Config) -> Vec<Flip> {
         if da.row == 0 || da.row == std::u16::MAX {
             continue;
         }
-        println!("({}, {}, {}, {}): row {}", da.chan, da.dimm, da.rank, da.bank, da.row);
+        println!("(Chan {}, DIMM {}, Rank {}, Bank {}, Row {})", da.chan, da.dimm, da.rank, da.bank, da.row);
 
         let row_above = mem.same_row_ranges(&da.row_above());
         let row_below = mem.same_row_ranges(&da.row_below());
@@ -174,23 +174,28 @@ fn template_2mb_contig(mem: &mut MemMap, c: &Config) -> Vec<Flip> {
     flips
 }
 
-pub fn test_contig_mem_diff(c: &Config) {
-    let mem_attack = alloc_1gb_hugepage(c).unwrap();
-    println!("Allocated memory successfully at {:?}", &mem_attack[0]);
-    let start_p = virt_to_phys_pagemap(&mem_attack[0]).unwrap();
-    print!("phys: {:X}", start_p);
-    //let end_p = virt_to_phys(unsafe { mem_attack.add(2 * 1<<20 - 1) }).unwrap();
-    //assert_eq!(start_p + 2 * 1<<20 - 1, end_p)
-}
-
 pub fn test_alloc(c: &Config) {
     contig_mem_diff(c);
 }
 
-pub fn test_template(c: &Config) {
-    let mut mem_attack = alloc_2mb_buddy(&c).unwrap();
+pub fn test_template(c: &mut Config) {
+
+    let mut mem_attack = alloc_2mb_hugepage(&c).unwrap();
+    println!(
+        "Allocated memory successfully at {:?}",
+        (*mem_attack).as_ptr()
+    );
+
+    let start_p = virt_to_phys_pagemap(mem_attack.as_ptr()).unwrap_or(std::usize::MAX);
+    println!("Physical address: {:p}", start_p as *const usize);
+
+    c.reads_per_hammer = calibrate(&mem_attack, c);
+    println!(
+        "Calibrated to {} iterations per hammering",
+        c.reads_per_hammer
+    );
     let flips = template_2mb_contig(&mut mem_attack, &c);
-    println!("Found flips: {:?}", flips)
+    println!("Found flips:\n{:#?}", flips)
 }
 
 pub fn test_rambleed() {
@@ -204,7 +209,8 @@ pub fn test_rambleed() {
             dual_rank: true,
         }),
     };
-    let mut mem_attack = alloc_2mb_buddy(&c).unwrap();
+
+    let mut mem_attack = alloc_2mb_hugepage(&c).unwrap();
     let flips = template_2mb_contig(&mut mem_attack, &c);
     for f in flips {
         let val = bool_exploit_flip(&mut mem_attack, &f, &c);
@@ -239,7 +245,8 @@ fn row_conflict_pair(mem: &MemMap) -> Option<(DramAddr, DramAddr)> {
     None
 }
 
-fn calibrate<T: Architecture>(mem: &MemMap, a: T) -> usize {
+fn calibrate(mem: &MemMap, c: & Config) -> usize {
+    let a = &c.arch;
     let (a1, a2) = row_conflict_pair(mem).expect("No row conflict pair found! Calibration failed");
     let a1 = mem.offset(a.dram_to_phys(&a1));
     let a2 = mem.offset(a.dram_to_phys(&a2));
@@ -248,28 +255,6 @@ fn calibrate<T: Architecture>(mem: &MemMap, a: T) -> usize {
 
 fn test_stats(c : &Config) {
     let mut mem_attack = alloc_2mb_hugepage(&c).expect("Failed to allocate memory using hugepages");
-
-    let addr_old = DramAddr {
-        chan: 0,
-        dimm: 0,
-        rank: 1,
-        bank: 1,
-        row: 7,
-        col: 731,
-        byte: 0,
-        bit: 6,
-    };
-
-    let addr_likely = DramAddr {
-        chan: 0,
-        dimm: 0,
-        rank: 0,
-        bank: 4,
-        row: 10,
-        col: 648,
-        byte: 5,
-        bit: 6,
-    };
 
     let addr = DramAddr {
         chan: 0,
@@ -283,7 +268,7 @@ fn test_stats(c : &Config) {
     };
 
     let mut flips = template_dram_addr(&mut mem_attack, &addr, &c);
-    //let mut flips = template_2mb_contig(&mut mem_attack, &c);
+
     println!("Found the following flips {:?}", flips);
     println!(
         "Flips as DRAM: {:?}",
@@ -302,6 +287,7 @@ fn main() {
         dual_dimm: false,
         dual_rank: true,
     };
+
     let mut c: Config = Config {
         aligned_bits: 20,
         reads_per_hammer: 0,
@@ -309,27 +295,14 @@ fn main() {
         arch: Box::new(arch.clone()),
     };
 
+    test_template(&mut c);
+
+    // Test timing attack by Schwarz
     //let mut mem_attack = alloc_2mb_hugepage(&c).expect("Failed to allocate memory using hugepages");
     //let off = reverse_mapping(&c, mem_attack.as_mut_ptr());
     //println!("Page offset to 2 mb: {:?}", off);
-    //println!(
-    //    "Allocated memory successfully at {:?}",
-    //    (*mem_attack).as_ptr()
-    //);
 
-    //let start_p = virt_to_phys_pagemap(mem_attack.as_ptr()).unwrap_or(std::usize::MAX);
-    //println!("Physical address: {:p}", start_p as *const usize);
-
-    //c.reads_per_hammer = calibrate(&mem_attack, arch);
-    //println!(
-    //    "Calibrated to {} iterations per hammering",
-    //    c.reads_per_hammer
-    //);
-
-
-    contig_mem_diff(&c);
-    //println!("{:#?}", offset_to_dram(0, &c));
-    //println!("{:#?}", offset_to_dram(1002000, &c));
-    //println!("{:#?}", mem_attack);
+    // Test exploit of buddy allocator
     //contig_mem_diff(&c);
+
 }

@@ -160,8 +160,8 @@ fn flips_in_range(mem: &MemMap, v: &DramRange, expected: u8, c: &Config) -> Vec<
 }
 
 pub(crate) fn profile_addr(mem: &mut MemMap, da: &DramAddr, p: u8, c: &Config) -> Vec<Flip> {
-    let mut da_above = da.row_above();
-    let mut da_below = da.row_below();
+    let da_above = da.row_above();
+    let da_below = da.row_below();
 
     let row_above = byte_range(&da_above);
     let row_below = byte_range(&da_below);
